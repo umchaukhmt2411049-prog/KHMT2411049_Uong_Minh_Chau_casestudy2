@@ -1,15 +1,8 @@
-@'
 .env
 .env.*
 !.env.example
-**/.env
-**/.env.*
-!**/.env.example
-
 **/node_modules/
 **/build/
 **/.dart_tool/
 **/coverage/
-
 .vscode/
-'@ | Set-Content -Path .gitignore -Encoding utf8
