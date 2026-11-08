@@ -33,6 +33,7 @@ async function canViewTask(task, userId) {
 async function getTasks(req, res) {
   try {
     const sharedTaskIds = await TaskShare.find({ userId: req.userId }).distinct("taskId");
+    const sharedTaskIdSet = new Set(sharedTaskIds.map((id) => id.toString()));
     const tasks = await Task.find({
       $or: [
         { createdBy: req.userId },
@@ -43,7 +44,12 @@ async function getTasks(req, res) {
       .sort({ createdAt: -1 })
       .lean();
 
-    return res.status(200).json({ count: tasks.length, tasks });
+    const tasksWithScope = tasks.map((task) => ({
+      ...task,
+      _isSharedWithMe: sharedTaskIdSet.has(task._id.toString()),
+    }));
+
+    return res.status(200).json({ count: tasksWithScope.length, tasks: tasksWithScope });
   } catch (error) {
     console.error("Get tasks error:", error.message);
     return res.status(500).json({ message: "Khong the lay danh sach cong viec" });

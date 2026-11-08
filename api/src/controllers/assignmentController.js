@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const Task = require("../models/Task");
 const User = require("../models/User");
 const TaskShare = require("../models/TaskShare");
+const { notifyTaskRecipients } = require("../services/notificationService");
 
 function validId(value) {
   return mongoose.isValidObjectId(value);
@@ -80,7 +81,9 @@ async function addAssignees(req, res) {
       return res.status(404).json({ message: "Mot hoac nhieu nguoi dung khong ton tai" });
     }
 
-    const finalIds = new Set(task.assigneeIds.map((id) => id.toString()));
+    const existingIds = new Set(task.assigneeIds.map((id) => id.toString()));
+    const newlyAddedIds = uniqueIds.filter((id) => !existingIds.has(id));
+    const finalIds = new Set(existingIds);
     uniqueIds.forEach((id) => finalIds.add(id));
 
     if (req.body.primaryAssigneeId !== undefined) {
@@ -95,6 +98,15 @@ async function addAssignees(req, res) {
 
     task.assigneeIds = [...finalIds];
     await task.save();
+
+    if (newlyAddedIds.length > 0) {
+      await notifyTaskRecipients({
+        task,
+        actorId: req.userId,
+        recipientIds: newlyAddedIds,
+        eventType: "task_assigned",
+      });
+    }
 
     const assignees = await User.find({ _id: { $in: task.assigneeIds } })
       .select("fullName email avatarUrl")

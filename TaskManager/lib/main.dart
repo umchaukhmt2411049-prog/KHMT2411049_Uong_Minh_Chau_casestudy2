@@ -209,6 +209,53 @@ class ApiService {
     );
     if (response.statusCode != 200) throw Exception(getError(response));
   }
+
+  static Future<Map<String, dynamic>> getNotifications(String token) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/notifications'),
+      headers: _headers(token),
+    );
+    if (response.statusCode != 200) throw Exception(getError(response));
+    return Map<String, dynamic>.from(jsonDecode(response.body));
+  }
+
+  static Future<void> markNotificationRead(String token, String id) async {
+    final response = await http.patch(
+      Uri.parse('$baseUrl/notifications/$id/read'),
+      headers: _headers(token, json: true),
+      body: jsonEncode(const {}),
+    );
+    if (response.statusCode != 200) throw Exception(getError(response));
+  }
+
+  static Future<void> markAllNotificationsRead(String token) async {
+    final response = await http.patch(
+      Uri.parse('$baseUrl/notifications/read-all'),
+      headers: _headers(token, json: true),
+      body: jsonEncode(const {}),
+    );
+    if (response.statusCode != 200) throw Exception(getError(response));
+  }
+
+  static Future<Map<String, dynamic>> getStatistics(String token) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/statistics'),
+      headers: _headers(token),
+    );
+    if (response.statusCode != 200) throw Exception(getError(response));
+    return Map<String, dynamic>.from(jsonDecode(response.body));
+  }
+
+  static Future<List<Map<String, dynamic>>> getEmailLogs(String token) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/email-logs'),
+      headers: _headers(token),
+    );
+    if (response.statusCode != 200) throw Exception(getError(response));
+    final data = Map<String, dynamic>.from(jsonDecode(response.body));
+    final items = data['logs'] as List? ?? [];
+    return items.map((item) => Map<String, dynamic>.from(item as Map)).toList();
+  }
 }
 
 // ================= APPLICATION =================
@@ -534,13 +581,16 @@ class _TaskListScreenState extends State<TaskListScreen> {
   String? error;
   String statusFilter = 'all';
   String priorityFilter = 'all';
+  String scopeFilter = 'all';
   String sortBy = 'createdAt';
   String sortOrder = 'desc';
+  int unreadNotificationCount = 0;
 
   @override
   void initState() {
     super.initState();
     loadTasks();
+    loadUnreadNotificationCount();
   }
 
   @override
@@ -569,6 +619,38 @@ class _TaskListScreenState extends State<TaskListScreen> {
     }
   }
 
+  Future<void> loadUnreadNotificationCount() async {
+    try {
+      final data = await ApiService.getNotifications(widget.token);
+      if (!mounted) return;
+      setState(() => unreadNotificationCount = (data['unreadCount'] as num?)?.toInt() ?? 0);
+    } catch (_) {
+      // Không chặn màn hình công việc nếu API thông báo tạm thời không sẵn sàng.
+    }
+  }
+
+  Future<void> openNotifications() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => NotificationsScreen(
+          token: widget.token,
+          onTasksChanged: loadTasks,
+        ),
+      ),
+    );
+    await loadUnreadNotificationCount();
+  }
+
+  Future<void> openStatistics() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StatisticsScreen(token: widget.token),
+      ),
+    );
+  }
+
   Future<void> openCreateTask() async {
     final result = await Navigator.push<bool>(
       context,
@@ -594,6 +676,7 @@ class _TaskListScreenState extends State<TaskListScreen> {
     final searchTemp = TextEditingController(text: searchController.text);
     String tempStatus = statusFilter;
     String tempPriority = priorityFilter;
+    String tempScope = scopeFilter;
     String tempSortBy = sortBy;
     String tempSortOrder = sortOrder;
 
@@ -614,6 +697,21 @@ class _TaskListScreenState extends State<TaskListScreen> {
                       labelText: 'Tên công việc',
                       prefixIcon: Icon(Icons.search),
                     ),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: tempScope,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Phạm vi'),
+                    items: const [
+                      DropdownMenuItem(value: 'all', child: Text('Tất cả')),
+                      DropdownMenuItem(value: 'created', child: Text('Tôi tạo')),
+                      DropdownMenuItem(value: 'assigned', child: Text('Được giao cho tôi')),
+                      DropdownMenuItem(value: 'shared', child: Text('Được chia sẻ với tôi')),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) setDialogState(() => tempScope = value);
+                    },
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
@@ -684,6 +782,7 @@ class _TaskListScreenState extends State<TaskListScreen> {
                 setDialogState(() {
                   tempStatus = 'all';
                   tempPriority = 'all';
+                  tempScope = 'all';
                   tempSortBy = 'createdAt';
                   tempSortOrder = 'desc';
                 });
@@ -708,6 +807,7 @@ class _TaskListScreenState extends State<TaskListScreen> {
         searchController.text = searchTemp.text;
         statusFilter = tempStatus;
         priorityFilter = tempPriority;
+        scopeFilter = tempScope;
         sortBy = tempSortBy;
         sortOrder = tempSortOrder;
       });
@@ -717,12 +817,30 @@ class _TaskListScreenState extends State<TaskListScreen> {
 
   List<Map<String, dynamic>> get visibleTasks {
     final query = searchController.text.trim().toLowerCase();
+    final currentUserId = widget.user['id']?.toString() ?? '';
     final result = tasks.where((task) {
       final title = task['title']?.toString().toLowerCase() ?? '';
-      final matchesQuery = query.isEmpty || title.contains(query);
+      final description = task['description']?.toString().toLowerCase() ?? '';
+      final matchesQuery = query.isEmpty || title.contains(query) || description.contains(query);
       final matchesStatus = statusFilter == 'all' || task['status'] == statusFilter;
       final matchesPriority = priorityFilter == 'all' || task['priority'] == priorityFilter;
-      return matchesQuery && matchesStatus && matchesPriority;
+
+      final createdByMe = task['createdBy']?.toString() == currentUserId;
+      final assigneeIds = (task['assigneeIds'] as List? ?? []).map((value) {
+        if (value is Map) return (value['_id'] ?? value['id'] ?? '').toString();
+        return value.toString();
+      }).toSet();
+      final assignedToMe = assigneeIds.contains(currentUserId);
+      final sharedWithMe = task['_isSharedWithMe'] == true;
+
+      final matchesScope = switch (scopeFilter) {
+        'created' => createdByMe,
+        'assigned' => assignedToMe,
+        'shared' => sharedWithMe,
+        _ => true,
+      };
+
+      return matchesQuery && matchesStatus && matchesPriority && matchesScope;
     }).toList();
 
     int priorityRank(dynamic value) {
@@ -765,6 +883,36 @@ class _TaskListScreenState extends State<TaskListScreen> {
       appBar: AppBar(
         title: const Text('Công việc của tôi'),
         actions: [
+          IconButton(
+            tooltip: 'Thông báo',
+            onPressed: openNotifications,
+            icon: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                const Icon(Icons.notifications_outlined),
+                if (unreadNotificationCount > 0)
+                  Positioned(
+                    right: -7,
+                    top: -5,
+                    child: Container(
+                      padding: const EdgeInsets.all(3),
+                      constraints: const BoxConstraints(minWidth: 17, minHeight: 17),
+                      decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
+                      child: Text(
+                        unreadNotificationCount > 99 ? '99+' : '$unreadNotificationCount',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Thống kê',
+            onPressed: openStatistics,
+            icon: const Icon(Icons.bar_chart_outlined),
+          ),
           IconButton(
             tooltip: 'Tìm kiếm và lọc',
             onPressed: openFilterDialog,
@@ -2087,6 +2235,334 @@ class _TaskSharingScreenState extends State<TaskSharingScreen> {
       ),
     );
   }
+}
+
+// ================= NOTIFICATIONS =================
+
+class NotificationsScreen extends StatefulWidget {
+  final String token;
+  final Future<void> Function() onTasksChanged;
+
+  const NotificationsScreen({
+    super.key,
+    required this.token,
+    required this.onTasksChanged,
+  });
+
+  @override
+  State<NotificationsScreen> createState() => _NotificationsScreenState();
+}
+
+class _NotificationsScreenState extends State<NotificationsScreen> {
+  List<Map<String, dynamic>> notifications = [];
+  bool isLoading = true;
+  String? error;
+  int unreadCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    loadNotifications();
+  }
+
+  Future<void> loadNotifications() async {
+    setState(() {
+      isLoading = true;
+      error = null;
+    });
+    try {
+      final data = await ApiService.getNotifications(widget.token);
+      if (!mounted) return;
+      setState(() {
+        notifications = (data['notifications'] as List? ?? [])
+            .map((item) => Map<String, dynamic>.from(item as Map))
+            .toList();
+        unreadCount = (data['unreadCount'] as num?)?.toInt() ?? 0;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => error = e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => isLoading = false);
+    }
+  }
+
+  Future<void> markAllRead() async {
+    if (unreadCount == 0) return;
+    try {
+      await ApiService.markAllNotificationsRead(widget.token);
+      await loadNotifications();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    }
+  }
+
+  Future<void> openNotification(Map<String, dynamic> item) async {
+    final id = item['_id']?.toString() ?? '';
+    final rawTask = item['taskId'];
+    final taskId = rawTask is Map ? rawTask['_id']?.toString() ?? '' : rawTask?.toString() ?? '';
+
+    try {
+      if (item['isRead'] != true && id.isNotEmpty) {
+        await ApiService.markNotificationRead(widget.token, id);
+        await loadNotifications();
+      }
+      if (!mounted) return;
+      if (taskId.isNotEmpty && taskId != 'null') {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => TaskDetailScreen(
+              token: widget.token,
+              taskId: taskId,
+              onChanged: widget.onTasksChanged,
+            ),
+          ),
+        );
+        await widget.onTasksChanged();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Thông báo'),
+        actions: [
+          IconButton(
+            tooltip: 'Đánh dấu tất cả đã đọc',
+            onPressed: unreadCount > 0 ? markAllRead : null,
+            icon: const Icon(Icons.done_all),
+          ),
+          IconButton(
+            tooltip: 'Tải lại',
+            onPressed: loadNotifications,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : error != null
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(error!, textAlign: TextAlign.center),
+                      const SizedBox(height: 12),
+                      FilledButton(onPressed: loadNotifications, child: const Text('Thử lại')),
+                    ],
+                  ),
+                )
+              : notifications.isEmpty
+                  ? const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.notifications_none, size: 56, color: Colors.grey),
+                          SizedBox(height: 12),
+                          Text('Bạn chưa có thông báo nào.'),
+                        ],
+                      ),
+                    )
+                  : RefreshIndicator(
+                      onRefresh: loadNotifications,
+                      child: ListView.separated(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: notifications.length,
+                        separatorBuilder: (_, index) => const SizedBox(height: 8),
+                        itemBuilder: (context, index) {
+                          final item = notifications[index];
+                          final isRead = item['isRead'] == true;
+                          return Card(
+                            color: isRead ? null : Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.35),
+                            child: ListTile(
+                              leading: Icon(
+                                item['type'] == 'task_assigned' ? Icons.assignment_ind_outlined : Icons.share_outlined,
+                                color: isRead ? Colors.grey : Theme.of(context).colorScheme.primary,
+                              ),
+                              title: Text(item['title']?.toString() ?? 'Thông báo', style: TextStyle(fontWeight: isRead ? FontWeight.normal : FontWeight.bold)),
+                              subtitle: Padding(
+                                padding: const EdgeInsets.only(top: 6),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(item['message']?.toString() ?? ''),
+                                    const SizedBox(height: 5),
+                                    Text(formatDateTime(item['createdAt']), style: Theme.of(context).textTheme.bodySmall),
+                                    if (!isRead) const Padding(padding: EdgeInsets.only(top: 6), child: Text('Chưa đọc', style: TextStyle(color: Colors.green, fontWeight: FontWeight.w600))),
+                                  ],
+                                ),
+                              ),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => openNotification(item),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+    );
+  }
+}
+
+// ================= STATISTICS =================
+
+class StatisticsScreen extends StatefulWidget {
+  final String token;
+
+  const StatisticsScreen({super.key, required this.token});
+
+  @override
+  State<StatisticsScreen> createState() => _StatisticsScreenState();
+}
+
+class _StatisticsScreenState extends State<StatisticsScreen> {
+  Map<String, dynamic> statistics = {};
+  bool isLoading = true;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    loadStatistics();
+  }
+
+  Future<void> loadStatistics() async {
+    setState(() {
+      isLoading = true;
+      error = null;
+    });
+    try {
+      final data = await ApiService.getStatistics(widget.token);
+      if (!mounted) return;
+      setState(() => statistics = Map<String, dynamic>.from(data['statistics'] as Map? ?? const {}));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => error = e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => isLoading = false);
+    }
+  }
+
+  int number(String key) => (statistics[key] as num?)?.toInt() ?? 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = Map<String, dynamic>.from(statistics['statusCounts'] as Map? ?? const {});
+    final total = number('totalTasks');
+    final todo = (status['todo'] as num?)?.toInt() ?? 0;
+    final inProgress = (status['in_progress'] as num?)?.toInt() ?? 0;
+    final completed = (status['completed'] as num?)?.toInt() ?? 0;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Thống kê công việc'),
+        actions: [IconButton(tooltip: 'Tải lại', onPressed: loadStatistics, icon: const Icon(Icons.refresh))],
+      ),
+      body: isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : error != null
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(error!, textAlign: TextAlign.center),
+                      const SizedBox(height: 12),
+                      FilledButton(onPressed: loadStatistics, child: const Text('Thử lại')),
+                    ],
+                  ),
+                )
+              : RefreshIndicator(
+                  onRefresh: loadStatistics,
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      _statCard(context, 'Tổng số công việc', total, Icons.task_alt),
+                      const SizedBox(height: 12),
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('Công việc theo trạng thái', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 16),
+                              _statusProgress(context, 'Chưa thực hiện', todo, total),
+                              const SizedBox(height: 14),
+                              _statusProgress(context, 'Đang thực hiện', inProgress, total),
+                              const SizedBox(height: 14),
+                              _statusProgress(context, 'Đã hoàn thành', completed, total),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(child: _statCard(context, 'Tôi tạo', number('createdByMe'), Icons.create_outlined)),
+                          const SizedBox(width: 10),
+                          Expanded(child: _statCard(context, 'Được giao cho tôi', number('assignedToMe'), Icons.assignment_ind_outlined)),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      _statCard(context, 'Được chia sẻ với tôi', number('sharedWithMe'), Icons.share_outlined),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(child: _statCard(context, 'Quá hạn', number('overdueTasks'), Icons.warning_amber_outlined)),
+                          const SizedBox(width: 10),
+                          Expanded(child: _statCard(context, 'Sắp đến hạn (7 ngày)', number('dueSoonTasks'), Icons.event_available_outlined)),
+                        ],
+                      ),
+                      const SizedBox(height: 24),
+                    ],
+                  ),
+                ),
+    );
+  }
+
+  Widget _statCard(BuildContext context, String title, int value, IconData icon) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Icon(icon, size: 28, color: Theme.of(context).colorScheme.primary),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: Theme.of(context).textTheme.bodyMedium), const SizedBox(height: 4), Text('$value', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold))])),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statusProgress(BuildContext context, String label, int value, int total) {
+    final fraction = total == 0 ? 0.0 : (value / total).clamp(0.0, 1.0).toDouble();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(label), Text('$value / $total', style: const TextStyle(fontWeight: FontWeight.w600))]),
+        const SizedBox(height: 6),
+        LinearProgressIndicator(value: fraction),
+      ],
+    );
+  }
+}
+
+String formatDateTime(dynamic value) {
+  if (value == null) return '';
+  final date = DateTime.tryParse(value.toString())?.toLocal();
+  if (date == null) return value.toString();
+  return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
 }
 
 // ================= HELPER FUNCTIONS =================

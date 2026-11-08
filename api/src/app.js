@@ -7,6 +7,9 @@ const taskRoutes = require("./routes/taskRoutes");
 const userRoutes = require("./routes/userRoutes");
 const assignmentRoutes = require("./routes/assignmentRoutes");
 const taskShareRoutes = require("./routes/taskShareRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
+const emailLogRoutes = require("./routes/emailLogRoutes");
+const statisticsRoutes = require("./routes/statisticsRoutes");
 
 const app = express();
 
@@ -30,6 +33,9 @@ app.use("/api/users", userRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/tasks", assignmentRoutes);
 app.use("/api/tasks", taskShareRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/email-logs", emailLogRoutes);
+app.use("/api/statistics", statisticsRoutes);
 
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && "body" in err) {

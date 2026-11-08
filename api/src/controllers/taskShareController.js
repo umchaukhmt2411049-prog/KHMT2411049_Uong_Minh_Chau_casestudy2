@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const Task = require("../models/Task");
 const User = require("../models/User");
 const TaskShare = require("../models/TaskShare");
+const { notifyTaskRecipients } = require("../services/notificationService");
 
 function validId(value) {
   return mongoose.isValidObjectId(value);
@@ -71,6 +72,9 @@ async function addShares(req, res) {
       return res.status(404).json({ message: "Mot hoac nhieu nguoi dung khong ton tai" });
     }
 
+    const existingIds = new Set((await TaskShare.find({ taskId: task._id, userId: { $in: uniqueIds } }).distinct("userId")).map(String));
+    const newlySharedIds = uniqueIds.filter((id) => !existingIds.has(id));
+
     const operations = uniqueIds.map((userId) => ({
       updateOne: {
         filter: { taskId: task._id, userId },
@@ -82,6 +86,15 @@ async function addShares(req, res) {
       },
     }));
     await TaskShare.bulkWrite(operations);
+
+    if (newlySharedIds.length > 0) {
+      await notifyTaskRecipients({
+        task,
+        actorId: req.userId,
+        recipientIds: newlySharedIds,
+        eventType: "task_shared",
+      });
+    }
 
     const shares = await TaskShare.find({ taskId: task._id })
       .populate("userId", "fullName email avatarUrl")
